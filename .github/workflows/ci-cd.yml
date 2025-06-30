@@ -150,7 +150,7 @@ jobs:
 
         # Configurar git
         git config user.name "GitHub Action"
-        git config user.email "seu-email@exemplo.com"
+        git config user.email "pietro.silva023@gmail.com"
         echo "DEBUG: Configuração do Git definida"
 
         # Commit e tag
@@ -214,9 +214,9 @@ jobs:
         file: ./backend/Dockerfile
         push: true
         tags: |
-          prsilva1w/atv-IEC:latest
-          prsilva1w/atv-IEC:${{ github.ref_name }}
-          prsilva1w/atv-IEC:${{ steps.version_step.outputs.NEW_VERSION }}
+          prsilva1w/cicd:latest
+          prsilva1w/cicd:${{ github.ref_name }}
+          prsilva1w/cicd:${{ steps.version_step.outputs.NEW_VERSION }}
         cache-from: type=local,src=/tmp/.buildx-cache
         cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
@@ -277,7 +277,7 @@ jobs:
           -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
           -H "Content-Type: application/json" \
           -d '{
-            "image": "prsilva1w/atv-IEC:${{ steps.version_step.outputs.NEW_VERSION }}"
+            "image": "prsilva1w/cicd:${{ steps.version_step.outputs.NEW_VERSION }}"
           }'
         
         echo "Comando de deploy para o Render enviado."
