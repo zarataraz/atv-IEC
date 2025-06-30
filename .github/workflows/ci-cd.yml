@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
     inputs:
       version:
@@ -47,7 +47,7 @@ jobs:
 
   # Job de build e deploy da imagem Docker da aplicação
   build_and_deploy_app:
-    if: startsWith(github.ref, 'refs/heads/main')
+    if: startsWith(github.ref, 'refs/heads/master')
     needs: ci
     runs-on: ubuntu-latest
     permissions:
@@ -160,8 +160,8 @@ jobs:
         git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
 
         # Push do commit e da tag
-        echo "DEBUG: Fazendo push para 'main'..."
-        git push origin main
+        echo "DEBUG: Fazendo push para 'master'..."
+        git push origin master
         echo "DEBUG: Fazendo push da tag '$NEW_VERSION'..."
         git push origin "$NEW_VERSION"
         echo "DEBUG: Push de commit e tag concluído."
@@ -290,7 +290,7 @@ jobs:
 
   # Job de build e push da imagem Docker do PostgreSQL
   build_and_deploy_postgres:
-    if: startsWith(github.ref, 'refs/heads/main')
+    if: startsWith(github.ref, 'refs/heads/master')
     needs: ci
     runs-on: ubuntu-latest
     permissions:
