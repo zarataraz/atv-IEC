@@ -1,0 +1,379 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., 1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  # Job de CI (Continuous Integration)
+  ci:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+    
+    - name: Clear npm cache
+      run: |
+        npm cache clean --force
+    
+    - name: Install dependencies
+      run: |
+        cd backend
+        rm -f package-lock.json
+        npm install
+    
+    - name: Build application
+      run: |
+        cd backend
+        npm run build || echo "No build script found, skipping build step"
+
+  # Job de build e deploy da imagem Docker da aplicação
+  build_and_deploy_app:
+    if: startsWith(github.ref, 'refs/heads/main')
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    outputs:
+      app_version: ${{ steps.version_step.outputs.NEW_VERSION }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Fetch todas as tags
+      run: |
+        echo "Buscando todas as tags do repositório..."
+        git fetch --tags
+        echo "Tags existentes:"
+        git tag
+
+    - name: Executar Lógica de Versionamento
+      id: version_step
+      run: |
+        #!/bin/bash
+        set -e
+
+        echo "--- Iniciando processo de versionamento ---"
+        
+        # Buscar apenas tags de aplicação (prefixo 'v')
+        LAST_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || echo "")
+        
+        echo "DEBUG: Valor inicial de LAST_TAG: '$LAST_TAG'"
+
+        if [ -z "$LAST_TAG" ]; then
+            echo "Nenhuma tag 'vX.Y.Z' encontrada. Iniciando com v0.0.0."
+            LAST_TAG="v0.0.0"
+            # Se não há tags, vamos criar a primeira versão
+            MAJOR=0
+            MINOR=0
+            PATCH=1
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Primeira versão será: $NEW_VERSION"
+        else
+            echo "Última tag considerada: $LAST_TAG"
+
+            # Extrair componentes da versão
+            VERSION_WITHOUT_V=${LAST_TAG#v}
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_WITHOUT_V"
+            echo "DEBUG: Versão atual - Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
+
+            # Determinar incremento de versão
+            echo "Obtendo commits desde a última tag..."
+            COMMITS_SINCE_LAST_TAG=$(git log "$LAST_TAG..HEAD" --pretty=format:"%s")
+            echo "DEBUG: Commits desde '$LAST_TAG':"
+            echo "$COMMITS_SINCE_LAST_TAG"
+            echo "-----------------------------------"
+
+            INCREMENT="patch" # Padrão: incremento de patch
+            if [[ "$COMMITS_SINCE_LAST_TAG" == *"BREAKING CHANGE"* ]]; then
+                INCREMENT="major"
+            elif [[ "$COMMITS_SINCE_LAST_TAG" == *"feat"* ]]; then
+                INCREMENT="minor"
+            fi
+            echo "DEBUG: Tipo de incremento determinado: $INCREMENT"
+
+            # Incrementar versão
+            case $INCREMENT in
+                major)
+                    MAJOR=$((MAJOR + 1))
+                    MINOR=0
+                    PATCH=0
+                    ;;
+                minor)
+                    MINOR=$((MINOR + 1))
+                    PATCH=0
+                    ;;
+                patch)
+                    PATCH=$((PATCH + 1))
+                    ;;
+            esac
+
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Nova versão calculada: $NEW_VERSION"
+
+            # Verificar se a nova versão é a mesma da última tag
+            if [ "$NEW_VERSION" == "$LAST_TAG" ] && [ "$LAST_TAG" != "v0.0.0" ]; then
+              echo "A nova versão ($NEW_VERSION) é a mesma da última tag existente ($LAST_TAG). Não há necessidade de criar uma nova tag."
+              echo "NEW_VERSION=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+        fi
+
+        # Criar arquivo de versão
+        echo "$NEW_VERSION" > VERSION.txt
+        git add VERSION.txt
+        echo "DEBUG: Adicionado VERSION.txt ao git"
+
+        # Configurar git
+        git config user.name "GitHub Action"
+        git config user.email "seu-email@exemplo.com"
+        echo "DEBUG: Configuração do Git definida"
+
+        # Commit e tag
+        echo "DEBUG: Realizando commit com a nova versão..."
+        git commit -m "chore: release $NEW_VERSION [skip ci]"
+        echo "DEBUG: Criando tag '$NEW_VERSION'..."
+        git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
+
+        # Push do commit e da tag
+        echo "DEBUG: Fazendo push para 'main'..."
+        git push origin main
+        echo "DEBUG: Fazendo push da tag '$NEW_VERSION'..."
+        git push origin "$NEW_VERSION"
+        echo "DEBUG: Push de commit e tag concluído."
+
+        # Output para os próximos steps
+        echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        echo "--- Processo de versionamento concluído ---"
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Docker layers
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+
+    - name: Login no Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Debug Docker Hub authentication
+      run: |
+        echo "🔍 Debug detalhado da autenticação Docker Hub..."
+        echo "Username configurado: ${{ secrets.DOCKER_USERNAME }}"
+        echo "Password length: ${#DOCKER_PASSWORD}"
+        echo "Password starts with: ${DOCKER_PASSWORD:0:10}..."
+        
+        # Testar se conseguimos fazer login manualmente
+        echo "🧪 Testando login manual..."
+        echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin || echo "❌ Login manual falhou"
+        
+        # Verificar se estamos logados
+        echo "🔐 Verificando status do login..."
+        docker info | grep -i "username" || echo "❌ Não conseguimos verificar o status"
+        
+        # Testar pull de uma imagem pública
+        echo "📥 Testando pull de imagem pública..."
+        docker pull hello-world || echo "❌ Falha no pull de imagem pública"
+
+    - name: Build and push Docker image (App)
+      if: steps.version_step.outputs.NEW_VERSION != ''
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile
+        push: true
+        tags: |
+          prsilva1w/atv-IEC:latest
+          prsilva1w/atv-IEC:${{ github.ref_name }}
+          prsilva1w/atv-IEC:${{ steps.version_step.outputs.NEW_VERSION }}
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+    - name: Move cache
+      if: steps.version_step.outputs.NEW_VERSION != ''
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+    - name: Deploy to Render
+      if: steps.version_step.outputs.NEW_VERSION != ''
+      run: |
+        echo "Disparando novo deploy no Render para a versão: ${{ steps.version_step.outputs.NEW_VERSION }}"
+        
+        # Atualizar variáveis de ambiente no Render
+        curl -X PATCH "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}" \
+          -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "envVars": [
+              {
+                "key": "NODE_ENV",
+                "value": "production"
+              },
+              {
+                "key": "RENDER",
+                "value": "true"
+              },
+              {
+                "key": "DB_HOST",
+                "value": "${{ secrets.DB_HOST }}"
+              },
+              {
+                "key": "DB_PORT",
+                "value": "${{ secrets.DB_PORT }}"
+              },
+              {
+                "key": "DB_USER",
+                "value": "${{ secrets.DB_USER }}"
+              },
+              {
+                "key": "DB_PASSWORD",
+                "value": "${{ secrets.DB_PASSWORD }}"
+              },
+              {
+                "key": "DB_NAME",
+                "value": "${{ secrets.DB_NAME }}"
+              },
+              {
+                "key": "BETTERSTACK_SOURCE_TOKEN",
+                "value": "${{ secrets.BETTERSTACK_SOURCE_TOKEN }}"
+              }
+            ]
+          }'
+        
+        # Fazer deploy no Render
+        curl -X POST "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
+          -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "image": "prsilva1w/atv-IEC:${{ steps.version_step.outputs.NEW_VERSION }}"
+          }'
+        
+        echo "Comando de deploy para o Render enviado."
+
+    - name: Wait for deployment
+      if: steps.version_step.outputs.NEW_VERSION != ''
+      run: |
+        echo "Waiting for deployment to complete..."
+        sleep 60
+
+  # Job de build e push da imagem Docker do PostgreSQL
+  build_and_deploy_postgres:
+    if: startsWith(github.ref, 'refs/heads/main')
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Docker layers (PostgreSQL)
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache-postgres
+        key: ${{ runner.os }}-buildx-postgres-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-postgres-
+
+    - name: Login no Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Build and push Docker image (PostgreSQL)
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile.postgres
+        push: true
+        tags: |
+          prsilva1w/dockerpostgres:latest
+          prsilva1w/dockerpostgres:postgres15
+          prsilva1w/dockerpostgres:${{ github.sha }}
+        cache-from: type=local,src=/tmp/.buildx-cache-postgres
+        cache-to: type=local,dest=/tmp/.buildx-cache-postgres-new,mode=max
+
+    - name: Move cache (PostgreSQL)
+      run: |
+        rm -rf /tmp/.buildx-cache-postgres
+        mv /tmp/.buildx-cache-postgres-new /tmp/.buildx-cache-postgres
+
+    - name: Notify PostgreSQL image pushed
+      run: |
+        echo "✅ Imagem PostgreSQL enviada para Docker Hub:"
+        echo "   - prsilva1w/dockerpostgres:latest"
+        echo "   - prsilva1w/dockerpostgres:postgres15"
+        echo "   - prsilva1w/dockerpostgres:${{ github.sha }}"
+
+  # Job de notificação de erro
+  notify-error:
+    name: Notify on Error
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: [ci, build_and_deploy_app, build_and_deploy_postgres]
+    
+    steps:
+    - name: Send email notification
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "❌ Pipeline CI/CD Failed - ${{ github.repository }}"
+        to: ${{ secrets.NOTIFICATION_EMAIL }}
+        from: ${{ secrets.EMAIL_USERNAME }}
+        body: |
+          Pipeline CI/CD falhou no repositório ${{ github.repository }}
+          
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref }}
+          Workflow: ${{ github.workflow }}
+          Job: ${{ github.job }}
+          
+          Veja os detalhes em: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          Detalhes do erro:
+          ${{ toJSON(github.event) }} 
+          

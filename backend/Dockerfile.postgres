@@ -1,0 +1,20 @@
+# Usar PostgreSQL 15 Alpine como base
+FROM postgres:15-alpine
+
+# Definir variáveis de ambiente padrão
+ENV POSTGRES_DB=tarefas_db
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=password
+
+# Copiar script de inicialização
+COPY init.sql /docker-entrypoint-initdb.d/
+
+# Expor porta padrão do PostgreSQL
+EXPOSE 5432
+
+# Health check para PostgreSQL
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD pg_isready -U $POSTGRES_USER -d $POSTGRES_DB
+
+# Comando padrão do PostgreSQL
+CMD ["postgres"] 
